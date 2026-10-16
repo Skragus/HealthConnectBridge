@@ -1,6 +1,6 @@
 # Historical Health Connect sync release
 
-Version 2.0-historical, versionCode 2. The application ID remains `com.example.healthconnectbridge` (prod). The app's preferences filename, `device_id`, Room database name and table remain unchanged. Do not uninstall or clear app data during upgrade.
+Version 2.0-historical, versionCode 2. The current repository application ID defaults to `com.example.healthconnectbridge` (prod). Earlier commits used `com.example.watchdogbridge`; the installed APK revision is unknown. Set `-PbridgeApplicationId=com.example.watchdogbridge` to build for that older installed package. The build produces unsigned releases for both IDs; install only the exact package already on the phone. The app's preferences filename, `device_id`, Room database name and table remain unchanged. Do not uninstall or clear app data during upgrade.
 
 ## One schedule and upload path
 
@@ -18,11 +18,11 @@ A partial snapshot may upload its successful types, but never advances the local
 
 ## Build and install
 
-CI runs `./gradlew --no-daemon testProdDebugUnitTest assembleProdRelease`. The uploaded release APK is **unsigned**, contains no API key by default, and is not a ready-to-install signed update. WorkManager scheduling migration is tested with Robolectric; pagination is tested on the JVM. A real-device Health Connect/WorkManager smoke test remains required after installation.
+CI runs `./gradlew --no-daemon testProdDebugUnitTest assembleProdRelease`. The uploaded release APKs are **unsigned**, contains no API key by default, and is not a ready-to-install signed update. WorkManager scheduling migration is tested with Robolectric; pagination is tested on the JVM. A real-device Health Connect/WorkManager smoke test remains required after installation.
 
 For an actual upgrade, use the **same signing certificate as the existing installed APK**. Build/sign with the original Android Studio setup or original keystore; a newly generated debug/release key cannot replace the installed package. Do not uninstall to bypass a signature mismatch, because that changes the persisted device identity and loses local state.
 
-1. Build/sign this branch using the original signing key. Existing `local.properties` `apiKey`/`baseUrl` values still work and never enter version control. The production base URL has a safe default; alternatively enter the API key into the app's masked settings field after installing.
+1. Identify the installed package with `adb shell pm list packages` (look for `watchdogbridge` or `healthconnectbridge`), then select its matching artifact or Gradle property. Build/sign this branch using the original signing key. Existing `local.properties` `apiKey`/`baseUrl` values still work and never enter version control. The production base URL has a safe default; alternatively enter the API key into the app's masked settings field after installing.
 2. Install over the existing package (`adb install -r <signed-apk>` or Android's normal upgrade flow).
 3. Open the app once, review Health Connect permissions and API-key settings, and tap **Sync History Now**.
 4. Check Sync Status: one historical periodic worker. Confirm `/daily` traffic and new staging on Railway, with no new `/intraday` requests after old queued attempts have drained.

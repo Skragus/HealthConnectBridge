@@ -21,7 +21,7 @@ android {
     compileSdk = 36
 
     defaultConfig {
-        applicationId = "com.example.healthconnectbridge"
+        applicationId = providers.gradleProperty("bridgeApplicationId").orElse("com.example.healthconnectbridge").get()
         minSdk = 29
         targetSdk = 34
         versionCode = 2
@@ -65,6 +65,8 @@ android {
             buildConfigField("Boolean", "WORKER_PROOF_OF_LIFE_ENABLED", "false")
         }
     }
+
+    kotlinOptions { jvmTarget = "11" }
 
     testOptions { unitTests.isIncludeAndroidResources = true }
 

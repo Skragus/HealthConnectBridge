@@ -4,7 +4,6 @@ import android.content.Context
 import android.util.Log
 import androidx.work.CoroutineWorker
 import androidx.work.WorkerParameters
-import com.example.healthconnectbridge.BuildConfig
 import com.example.watchdogbridge.data.HealthConnectRepository
 import com.example.watchdogbridge.data.PreferencesRepository
 import com.example.watchdogbridge.data.local.AppDatabase

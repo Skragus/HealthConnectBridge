@@ -4,6 +4,9 @@ on:
     branches: [single-worker-sync]
   pull_request:
   workflow_dispatch:
+concurrency:
+  group: historical-${{ github.head_ref || github.ref_name }}
+  cancel-in-progress: true
 permissions:
   contents: read
 jobs:
@@ -23,10 +26,16 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
       - run: chmod +x gradlew
       - run: ./gradlew --no-daemon testProdDebugUnitTest assembleProdRelease
+      - name: Preserve package-matched unsigned releases
+        run: |
+          mkdir -p unsigned-releases
+          cp app/build/outputs/apk/prod/release/*-unsigned.apk unsigned-releases/watchdogbridge-healthconnectbridge-unsigned.apk
+          ./gradlew --no-daemon assembleProdRelease -PbridgeApplicationId=com.example.watchdogbridge
+          cp app/build/outputs/apk/prod/release/*-unsigned.apk unsigned-releases/watchdogbridge-watchdogbridge-unsigned.apk
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: watchdogbridge-historical-build
           path: |
-            app/build/outputs/apk/prod/release/*.apk
+            unsigned-releases/*.apk
             app/build/reports/tests/testProdDebugUnitTest/
