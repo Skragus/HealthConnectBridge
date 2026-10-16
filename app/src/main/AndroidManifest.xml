@@ -41,6 +41,7 @@
     </queries>
 
     <application
+        android:name="com.example.watchdogbridge.BridgeApplication"
         android:allowBackup="true"
         android:dataExtractionRules="@xml/data_extraction_rules"
         android:fullBackupContent="@xml/backup_rules"
@@ -51,7 +52,7 @@
         android:theme="@style/Theme.WatchdogBridge">
 
         <activity
-            android:name=".MainActivity"
+            android:name="com.example.watchdogbridge.MainActivity"
             android:exported="true"
             android:label="@string/app_name"
             android:theme="@style/Theme.WatchdogBridge">
@@ -62,7 +63,7 @@
         </activity>
 
         <activity
-            android:name=".PermissionsRationaleActivity"
+            android:name="com.example.watchdogbridge.PermissionsRationaleActivity"
             android:exported="true"
             android:label="Privacy Policy">
             <intent-filter>
@@ -73,7 +74,7 @@
         <activity-alias
             android:name="ViewPermissionUsageActivity"
             android:exported="true"
-            android:targetActivity=".PermissionsRationaleActivity"
+            android:targetActivity="com.example.watchdogbridge.PermissionsRationaleActivity"
             android:permission="android.permission.START_VIEW_PERMISSION_USAGE">
             <intent-filter>
                 <action android:name="android.intent.action.VIEW_PERMISSION_USAGE" />
@@ -82,13 +83,14 @@
         </activity-alias>
 
         <!-- BroadcastReceiver for MacroDroid worker restart -->
-        <receiver 
-            android:name=".receiver.WorkerRestartReceiver" 
+        <receiver
+            android:name="com.example.watchdogbridge.receiver.WorkerRestartReceiver"
             android:exported="true">
             <intent-filter>
                 <action android:name="com.example.watchdogbridge.RESTART_DAILY_WORKER"/>
                 <action android:name="com.example.watchdogbridge.RESTART_INTRADAY_WORKER"/>
                 <action android:name="com.example.watchdogbridge.RESTART_ALL_WORKERS"/>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED"/>
             </intent-filter>
         </receiver>
 

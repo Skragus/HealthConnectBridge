@@ -11,14 +11,14 @@ object DataHasher {
      */
     fun computeHash(data: DailyIngestRequest): String {
         val sb = StringBuilder()
-        
+
         // Version prefix to force re-sync if the hashing logic ever changes
-        sb.append("v3|") 
+        sb.append("historical-v4|")
 
         sb.append("date=${data.date}|")
         sb.append("app=${data.source.sourceApp}|")
         sb.append("device=${data.source.deviceId}|")
-        
+
         // We hash the entire raw blob to detect ANY change in underlying Health Connect records
         sb.append("raw=${data.rawJson}")
 

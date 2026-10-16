@@ -3,6 +3,7 @@ import java.io.FileInputStream
 
 plugins {
     alias(libs.plugins.android.application)
+    alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.compose)
     alias(libs.plugins.kotlin.serialization)
     id("kotlin-parcelize")
@@ -23,8 +24,8 @@ android {
         applicationId = "com.example.healthconnectbridge"
         minSdk = 29
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "2.0-historical"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -50,7 +51,7 @@ android {
             dimension = "environment"
             applicationIdSuffix = ".staging"
             val key = localProperties.getProperty("apiKey")?.replace("\"", "") ?: ""
-            val url = localProperties.getProperty("baseUrl")?.replace("\"", "") ?: "https://api.example.com/"
+            val url = localProperties.getProperty("baseUrl")?.replace("\"", "") ?: "https://health-ingest-api-production.up.railway.app/"
             buildConfigField("String", "BASE_URL", "\"$url\"")
             buildConfigField("String", "API_KEY", "\"$key\"")
             buildConfigField("Boolean", "WORKER_PROOF_OF_LIFE_ENABLED", "true")
@@ -58,12 +59,14 @@ android {
         create("prod") {
             dimension = "environment"
             val key = localProperties.getProperty("apiKey")?.replace("\"", "") ?: ""
-            val url = localProperties.getProperty("baseUrl")?.replace("\"", "") ?: "https://api.example.com/"
+            val url = localProperties.getProperty("baseUrl")?.replace("\"", "") ?: "https://health-ingest-api-production.up.railway.app/"
             buildConfigField("String", "BASE_URL", "\"$url\"")
             buildConfigField("String", "API_KEY", "\"$key\"")
             buildConfigField("Boolean", "WORKER_PROOF_OF_LIFE_ENABLED", "false")
         }
     }
+
+    testOptions { unitTests.isIncludeAndroidResources = true }
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_11
@@ -100,6 +103,9 @@ dependencies {
     ksp(libs.androidx.room.compiler)
 
     testImplementation(libs.junit)
+    testImplementation("org.robolectric:robolectric:4.14.1")
+    testImplementation("androidx.work:work-testing:2.9.0")
+    testImplementation("androidx.test:core:1.6.1")
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)
     androidTestImplementation(platform(libs.androidx.compose.bom))
