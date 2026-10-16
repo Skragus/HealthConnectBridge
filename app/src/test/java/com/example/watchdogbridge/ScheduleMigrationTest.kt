@@ -21,7 +21,7 @@ class ScheduleMigrationTest {
         WorkManagerTestInitHelper.initializeTestWorkManager(context)
         val manager = WorkManager.getInstance(context)
         val old = PeriodicWorkRequestBuilder<HealthConnectIntradayWorker>(1, TimeUnit.HOURS)
-            .addTag("intraday_sync").build()
+            .setInitialDelay(1, TimeUnit.DAYS).addTag("intraday_sync").build()
         manager.enqueueUniquePeriodicWork("HealthConnectIntradaySync", ExistingPeriodicWorkPolicy.KEEP, old).result.get()
         val manual = OneTimeWorkRequestBuilder<HealthConnectIntradayWorker>().addTag("manual_intraday_sync")
             .setInitialDelay(1, TimeUnit.DAYS).build()
