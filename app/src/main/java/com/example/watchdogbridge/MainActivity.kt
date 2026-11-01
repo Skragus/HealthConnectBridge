@@ -1,380 +1,100 @@
 package com.example.watchdogbridge
 
-import android.content.Intent
-import android.net.Uri
 import android.os.Bundle
-import android.provider.Settings
-import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.activity.enableEdgeToEdge
-import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
-import androidx.compose.foundation.layout.fillMaxSize
-import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
-import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.ButtonDefaults
-import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Scaffold
-import androidx.compose.material3.Text
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
+import androidx.compose.material3.*
+import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.health.connect.client.PermissionController
 import androidx.lifecycle.lifecycleScope
 import androidx.work.Data
-import androidx.work.OneTimeWorkRequestBuilder
-import androidx.work.WorkInfo
 import androidx.work.WorkManager
 import com.example.watchdogbridge.data.HealthConnectRepository
 import com.example.watchdogbridge.data.PreferencesRepository
-import com.example.watchdogbridge.data.local.AppDatabase
-import com.example.watchdogbridge.data.model.DailyIngestRequest
-import com.example.watchdogbridge.data.model.Source
-import com.example.watchdogbridge.network.NetworkClient
 import com.example.watchdogbridge.ui.theme.WatchdogBridgeTheme
-import com.example.watchdogbridge.worker.HealthConnectDailyWorker
-import com.example.watchdogbridge.worker.HealthConnectIntradayWorker
 import com.example.watchdogbridge.worker.WorkerUtil
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import java.text.SimpleDateFormat
-import java.time.Instant
 import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.ZoneId
-import java.time.format.DateTimeFormatter
-import java.util.Date
-import java.util.Locale
-import java.util.UUID
 
 class MainActivity : ComponentActivity() {
-
-    private val healthRepo by lazy { HealthConnectRepository(applicationContext) }
-    private val prefsRepo by lazy { PreferencesRepository(applicationContext) }
-    private var statusText by mutableStateOf("Ready")
-    
-    private var backfillStartDate by mutableStateOf("2025-10-01")
-    private var backfillEndDate by mutableStateOf(LocalDate.now().format(DateTimeFormatter.ISO_LOCAL_DATE))
-
-    private var onPermissionsResult: ((Boolean) -> Unit)? = null
-    
-    private val requestHealthPermissions = registerForActivityResult(
-        PermissionController.createRequestPermissionResultContract()
-    ) { granted ->
-        lifecycleScope.launch {
-            if (granted.containsAll(healthRepo.getPermissions())) {
-                onPermissionsResult?.invoke(true)
-            } else {
-                onPermissionsResult?.invoke(false)
-            }
-            onPermissionsResult = null
-        }
+    private val health by lazy { HealthConnectRepository(applicationContext) }
+    private val prefs by lazy { PreferencesRepository(applicationContext) }
+    private var status by mutableStateOf("Historical sync runs every 6 hours")
+    private val permissions = registerForActivityResult(PermissionController.createRequestPermissionResultContract()) {
+        status = "Permission selection saved"
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        enableEdgeToEdge()
-
-        WorkerUtil.scheduleWorkers(applicationContext)
-
         setContent {
+            var lookback by remember { mutableStateOf(prefs.getLookbackDays().toString()) }
+            var key by remember { mutableStateOf(prefs.getApiKey()) }
+            var start by remember { mutableStateOf(LocalDate.now().minusDays(6).toString()) }
+            var end by remember { mutableStateOf(LocalDate.now().toString()) }
             WatchdogBridgeTheme {
-                Scaffold(modifier = Modifier.fillMaxSize()) { innerPadding ->
-                    MainScreen(
-                        modifier = Modifier.padding(innerPadding),
-                        statusText = statusText,
-                        startDate = backfillStartDate,
-                        endDate = backfillEndDate,
-                        onStartDateChange = { backfillStartDate = it },
-                        onEndDateChange = { backfillEndDate = it },
-                        onConnectClick = {
-                            statusText = "Checking permissions..."
-                            connectToHealth { success ->
-                                statusText = if (success) "Permissions Granted" else "Permissions Denied"
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    Column(Modifier.padding(20.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                        Text("WatchdogBridge", style = MaterialTheme.typography.headlineMedium)
+                        Text("One historical Health Connect sync. Original record times are preserved.")
+                        Text(status)
+                        Button(onClick = { lifecycleScope.launch { permissions.launch(health.getPermissions()) } }) { Text("Health Connect Permissions") }
+                        OutlinedTextField(value = lookback, onValueChange = { lookback = it }, label = { Text("Lookback days (1–30, includes today)") })
+                        OutlinedTextField(value = key, onValueChange = { key = it }, label = { Text("API key") }, visualTransformation = PasswordVisualTransformation())
+                        Button(onClick = {
+                            val days = lookback.toIntOrNull()
+                            if (days == null || days !in 1..30) status = "Choose 1–30 lookback days"
+                            else {
+                                prefs.setLookbackDays(days)
+                                prefs.setApiKey(key)
+                                WorkerUtil.scheduleWorkers(applicationContext)
+                                status = "Settings saved"
                             }
-                        },
-                        onTestSyncClick = {
-                            statusText = "Daily Sync (7 days) queued..."
-                            testDailySync()
-                        },
-                        onCheckStatusClick = {
-                            statusText = "Checking status..."
-                            checkWorkerStatus()
-                        },
-                        onTriggerIntradayClick = {
-                            statusText = "Intraday Sync queued..."
-                            triggerIntradaySync()
-                        },
-                        onWipeHashesClick = {
-                            wipeDailyHashes()
-                        },
-                        onDebugSyncClick = {
-                            sendDebugSync()
-                        },
-                        onTriggerBackfillClick = {
-                            triggerCustomBackfill()
-                        },
-                        onCancelAllClick = {
-                            cancelAllWork()
-                        }
-                    )
+                        }) { Text("Save Settings") }
+                        Button(onClick = { enqueue(Data.EMPTY) }) { Text("Sync History Now") }
+                        Button(onClick = { showStatus() }) { Text("Check Sync Status") }
+                        HorizontalDivider()
+                        Text("Custom Historical Backfill", style = MaterialTheme.typography.titleMedium)
+                        OutlinedTextField(value = start, onValueChange = { start = it }, label = { Text("Start YYYY-MM-DD") })
+                        OutlinedTextField(value = end, onValueChange = { end = it }, label = { Text("End YYYY-MM-DD") })
+                        Button(onClick = {
+                            try {
+                                val first = LocalDate.parse(start)
+                                val last = LocalDate.parse(end)
+                                require(first <= last && last <= LocalDate.now())
+                                enqueue(Data.Builder().putString("start_date", start).putString("end_date", end).build())
+                            } catch (_: Exception) { status = "Enter a valid date range ending today or earlier" }
+                        }) { Text("Sync Date Range") }
+                    }
                 }
             }
         }
     }
 
-    private fun connectToHealth(onResult: (Boolean) -> Unit) {
+    private fun enqueue(data: Data) {
         lifecycleScope.launch {
-            if (healthRepo.hasPermissions()) {
-                onResult(true)
-            } else {
-                onPermissionsResult = onResult
-                requestHealthPermissions.launch(healthRepo.getPermissions())
+            if (prefs.getApiKey().isBlank()) { status = "Save your API key before syncing"; return@launch }
+            val id = WorkerUtil.enqueueManual(applicationContext, data)
+            WorkManager.getInstance(applicationContext).getWorkInfoByIdLiveData(id).observe(this@MainActivity) {
+                if (it != null) status = "Historical sync: ${it.state}"
             }
         }
     }
 
-    private fun triggerCustomBackfill() {
-        statusText = "Custom Backfill queued: $backfillStartDate to $backfillEndDate"
-        val data = Data.Builder()
-            .putString("start_date", backfillStartDate)
-            .putString("end_date", backfillEndDate)
-            .build()
-
-        val request = OneTimeWorkRequestBuilder<HealthConnectDailyWorker>()
-            .setInputData(data)
-            .addTag("custom_backfill")
-            .build()
-        WorkManager.getInstance(applicationContext).enqueue(request)
-        observeWork(request.id, "Backfill")
-    }
-
-    private fun testDailySync() {
-        val request = OneTimeWorkRequestBuilder<HealthConnectDailyWorker>()
-            .addTag("test_daily_sync")
-            .build()
-        WorkManager.getInstance(applicationContext).enqueue(request)
-        observeWork(request.id, "Daily Sync")
-    }
-
-    private fun triggerIntradaySync() {
-        val request = OneTimeWorkRequestBuilder<HealthConnectIntradayWorker>()
-            .addTag("manual_intraday_sync")
-            .build()
-        WorkManager.getInstance(applicationContext).enqueue(request)
-        observeWork(request.id, "Intraday Sync")
-    }
-
-    private fun cancelAllWork() {
-        WorkManager.getInstance(applicationContext).cancelAllWork()
-        statusText = "All Workers Cancelled!"
-    }
-
-    private fun sendDebugSync() {
+    private fun showStatus() {
         lifecycleScope.launch {
-            statusText = "Fetching yesterday's data for debug..."
-            try {
-                val yesterday = LocalDate.now().minusDays(1)
-                val dateStr = yesterday.format(DateTimeFormatter.ISO_LOCAL_DATE)
-                val zoneId = ZoneId.systemDefault()
-                val startOfDay = yesterday.atStartOfDay(zoneId).toInstant().toEpochMilli()
-                val endOfDay = yesterday.plusDays(1).atStartOfDay(zoneId).toInstant().toEpochMilli() - 1
-
-                val rawJson = healthRepo.readRawData(startOfDay, endOfDay)
-                val deviceId = prefsRepo.getDeviceId()
-
-                val request = DailyIngestRequest(
-                    date = dateStr,
-                    rawJson = rawJson,
-                    source = Source(
-                        deviceId = deviceId,
-                        collectedAt = Instant.now().toString()
-                    )
-                )
-
-                statusText = "Sending to /v1/ingest/debug..."
-                val response = withContext(Dispatchers.IO) {
-                    NetworkClient.api.postDebug(request)
-                }
-
-                if (response.isSuccessful) {
-                    statusText = "Debug Sync Success: ${response.code()}"
-                } else {
-                    statusText = "Debug Sync Failed: ${response.code()}"
-                }
-            } catch (e: Exception) {
-                statusText = "Debug Sync Error: ${e.message}"
+            val infos = withContext(Dispatchers.IO) {
+                WorkManager.getInstance(applicationContext).getWorkInfosForUniqueWork(WorkerUtil.PERIODIC_NAME).get()
             }
+            val active = infos.firstOrNull { !it.state.isFinished }
+            status = "Historical worker: ${active?.state ?: "Not scheduled"}\nLookback: ${prefs.getLookbackDays()} days\nLast successful sync: ${prefs.getLastSyncRun().takeIf { it > 0 }?.let { java.time.Instant.ofEpochMilli(it) } ?: "Never"}"
         }
-    }
-    
-    private fun wipeDailyHashes() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                AppDatabase.getDatabase(applicationContext).dailySyncStateDao().clearAll()
-                withContext(Dispatchers.Main) {
-                    statusText = "Daily Hashes Wiped!"
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    statusText = "Failed to wipe hashes: ${e.message}"
-                }
-            }
-        }
-    }
-
-    private fun observeWork(id: UUID, taskName: String) {
-        WorkManager.getInstance(applicationContext).getWorkInfoByIdLiveData(id)
-            .observe(this) { workInfo ->
-                if (workInfo != null) {
-                    statusText = "$taskName: ${workInfo.state}"
-                }
-            }
-    }
-
-    private fun checkWorkerStatus() {
-        lifecycleScope.launch(Dispatchers.IO) {
-            try {
-                val workManager = WorkManager.getInstance(applicationContext)
-                val dailyInfos = workManager.getWorkInfosForUniqueWork("HealthConnectDailySync").get()
-                val intraInfos = workManager.getWorkInfosForUniqueWork("HealthConnectIntradaySync").get()
-                
-                val lastRun = prefsRepo.getLastIntradayRun()
-                val lastRunText = if (lastRun > 0) {
-                     SimpleDateFormat("yyyy-MM-dd HH:mm:ss", Locale.getDefault()).format(Date(lastRun))
-                } else {
-                    "Never"
-                }
-
-                withContext(Dispatchers.Main) {
-                    val dailyState = if (!dailyInfos.isNullOrEmpty()) dailyInfos[0].state.toString() else "Not Found"
-                    val intraState = if (!intraInfos.isNullOrEmpty()) intraInfos[0].state.toString() else "Not Found"
-                    statusText = "Daily: $dailyState\nIntraday: $intraState\nLast Run: $lastRunText"
-                }
-            } catch (e: Exception) {
-                withContext(Dispatchers.Main) {
-                    statusText = "Error: ${e.message}"
-                }
-            }
-        }
-    }
-}
-
-@Composable
-fun MainScreen(
-    modifier: Modifier = Modifier,
-    statusText: String,
-    startDate: String,
-    endDate: String,
-    onStartDateChange: (String) -> Unit,
-    onEndDateChange: (String) -> Unit,
-    onConnectClick: () -> Unit,
-    onTestSyncClick: () -> Unit,
-    onCheckStatusClick: () -> Unit,
-    onTriggerIntradayClick: () -> Unit,
-    onWipeHashesClick: () -> Unit,
-    onDebugSyncClick: () -> Unit,
-    onTriggerBackfillClick: () -> Unit,
-    onCancelAllClick: () -> Unit
-) {
-    Column(
-        modifier = modifier
-            .fillMaxSize()
-            .padding(16.dp)
-            .verticalScroll(rememberScrollState()),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
-    ) {
-        Text("Health Connect Bridge", style = MaterialTheme.typography.headlineMedium)
-        
-        Spacer(Modifier.height(24.dp))
-        
-        Button(onClick = onConnectClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Connect Health Connect")
-        }
-        
-        Spacer(Modifier.height(16.dp))
-        
-        Button(onClick = onCheckStatusClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Check Worker Status")
-        }
-
-        Spacer(Modifier.height(16.dp))
-
-        Button(onClick = onTriggerIntradayClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Sync Today Now")
-        }
-        
-        Spacer(Modifier.height(16.dp))
-        
-        Button(onClick = onTestSyncClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Sync Last 7 Days")
-        }
-
-        Spacer(Modifier.height(32.dp))
-
-        // Backfill Section
-        Text("Custom Backfill", style = MaterialTheme.typography.titleMedium)
-        Spacer(Modifier.height(8.dp))
-        Row(modifier = Modifier.fillMaxWidth()) {
-            OutlinedTextField(
-                value = startDate,
-                onValueChange = onStartDateChange,
-                label = { Text("Start (YYYY-MM-DD)") },
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(8.dp))
-            OutlinedTextField(
-                value = endDate,
-                onValueChange = onEndDateChange,
-                label = { Text("End (YYYY-MM-DD)") },
-                modifier = Modifier.weight(1f)
-            )
-        }
-        Spacer(Modifier.height(8.dp))
-        Button(onClick = onTriggerBackfillClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Trigger Range Sync")
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Button(
-            onClick = onCancelAllClick, 
-            modifier = Modifier.fillMaxWidth(),
-            colors = ButtonDefaults.buttonColors(containerColor = MaterialTheme.colorScheme.error)
-        ) {
-            Text("Cancel All Pending Syncs")
-        }
-
-        Spacer(Modifier.height(32.dp))
-
-        // Danger Zone
-        Text("Danger Zone", style = MaterialTheme.typography.titleMedium, color = MaterialTheme.colorScheme.error)
-        Spacer(Modifier.height(8.dp))
-        Button(onClick = onWipeHashesClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Wipe Local Hashes")
-        }
-
-        Spacer(Modifier.height(16.dp))
-        Button(onClick = onDebugSyncClick, modifier = Modifier.fillMaxWidth()) {
-            Text("Send Yesterday to /debug")
-        }
-        
-        Spacer(Modifier.height(32.dp))
-        
-        Text(text = statusText, style = MaterialTheme.typography.bodyMedium)
     }
 }

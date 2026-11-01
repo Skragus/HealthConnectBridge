@@ -10,9 +10,6 @@ interface IngestApi {
     @POST("/v1/ingest/daily")
     suspend fun postDaily(@Body body: DailyIngestRequest): Response<IngestResponse>
 
-    @POST("/v1/ingest/intraday")
-    suspend fun postIntraday(@Body body: DailyIngestRequest): Response<IngestResponse>
-
     @POST("/v1/ingest/debug")
     suspend fun postDebug(@Body body: DailyIngestRequest): Response<IngestResponse>
 }

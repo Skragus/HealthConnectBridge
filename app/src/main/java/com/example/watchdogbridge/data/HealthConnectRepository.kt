@@ -15,6 +15,8 @@ import com.google.gson.JsonPrimitive
 import com.google.gson.JsonSerializationContext
 import com.google.gson.JsonSerializer
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.CancellationException
+import java.util.TreeMap
 import java.lang.reflect.Type
 import java.time.Instant
 
@@ -88,41 +90,42 @@ class HealthConnectRepository(private val context: Context) {
         }
     }
 
-    suspend fun readRawData(startTime: Long, endTime: Long): String {
-        Log.d(TAG, "Reading raw data: ${Instant.ofEpochMilli(startTime)} -> ${Instant.ofEpochMilli(endTime)}")
-        val rawData = mutableMapOf<String, List<Record>>()
-        val filter = TimeRangeFilter.between(Instant.ofEpochMilli(startTime), Instant.ofEpochMilli(endTime))
-        var errorCount = 0
+    data class ReadResult(val rawJson: String, val complete: Boolean)
 
+    suspend fun readRawData(startTime: Long, endTime: Long): String = readSnapshot(startTime, endTime).rawJson
+
+    suspend fun readSnapshot(startTime: Long, endTime: Long): ReadResult {
+        val rawData = sortedMapOf<String, Any>()
+        val statuses = sortedMapOf<String, Any>()
+        val filter = TimeRangeFilter.between(Instant.ofEpochMilli(startTime), Instant.ofEpochMilli(endTime))
+        var complete = true
         for (type in recordTypes) {
+            val name = type.simpleName ?: error("Missing record type name")
             try {
-                // Increased delay to 800ms between types
-                delay(800) 
-                
-                val response = healthConnectClient.readRecords(
-                    ReadRecordsRequest(
-                        recordType = type,
-                        timeRangeFilter = filter
+                delay(800)
+                val result = readAllPages { token ->
+                    val response = healthConnectClient.readRecords(
+                        ReadRecordsRequest(recordType = type, timeRangeFilter = filter,
+                            pageSize = 1000, pageToken = token)
                     )
-                )
-                if (response.records.isNotEmpty()) {
-                    rawData[type.simpleName ?: "Unknown"] = response.records
+                    RecordPage(response.records, response.pageToken)
                 }
-            } catch (e: Exception) {
-                errorCount++
-                if (e.message?.contains("quota exceeded", ignoreCase = true) == true) {
-                    Log.w(TAG, "Quota hit for ${type.simpleName}, 40s pause...")
-                    delay(40000) // Increased back-off
-                } else {
-                    Log.w(TAG, "Read failed for ${type.simpleName}", e)
-                }
+                // Stable ordering avoids hash churn from provider page order.
+                rawData[name] = result.records.sortedBy { it.metadata.id }
+                statuses[name] = mapOf("complete" to true, "pages" to result.pages, "count" to result.records.size)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                complete = false
+                val code = if (error is SecurityException) "permission_denied" else "read_failed"
+                // No exception text/record contents: provider errors can contain personal data.
+                Log.w(TAG, "Health Connect read failed type=$name error=$code")
+                statuses[name] = mapOf("complete" to false, "error" to code)
+                if (error.message?.contains("quota", ignoreCase = true) == true) delay(40000)
             }
         }
-
-        if (rawData.isEmpty() && errorCount > 0) {
-            throw IllegalStateException("Sync failed: all API calls hit quota limits")
-        }
-
-        return gson.toJson(rawData)
+        rawData["_sync"] = mapOf("version" to 1, "start_time" to Instant.ofEpochMilli(startTime).toString(),
+            "end_time" to Instant.ofEpochMilli(endTime).toString(), "types" to statuses)
+        return ReadResult(gson.toJson(rawData), complete)
     }
 }

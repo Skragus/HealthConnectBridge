@@ -12,119 +12,69 @@ import com.example.watchdogbridge.data.model.DailyIngestRequest
 import com.example.watchdogbridge.data.model.Source
 import com.example.watchdogbridge.network.NetworkClient
 import com.example.watchdogbridge.util.DataHasher
-import com.example.watchdogbridge.BuildConfig
-import com.example.watchdogbridge.util.NotificationUtil
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
-import java.time.format.DateTimeFormatter
 import java.time.temporal.ChronoUnit
 
-class HealthConnectDailyWorker(
-    appContext: Context,
-    workerParams: WorkerParameters
-) : CoroutineWorker(appContext, workerParams) {
+/** One implementation for periodic history, manual sync, and custom backfill. */
+class HealthConnectDailyWorker(context: Context, params: WorkerParameters) : CoroutineWorker(context, params) {
+    companion object {
+        // Serializes manual/backfill requests with periodic work in this app process.
+        private val syncMutex = Mutex()
+    }
 
-    private val syncStateDao = AppDatabase.getDatabase(appContext).dailySyncStateDao()
-    private val TAG = "HCDailyWorker"
-
-    override suspend fun doWork(): Result {
-        if (BuildConfig.WORKER_PROOF_OF_LIFE_ENABLED) {
-            NotificationUtil.postProofOfLifeNotification(applicationContext, "Daily Worker")
-            return Result.success()
-        }
-
-        val startStr = inputData.getString("start_date")
-        val endStr = inputData.getString("end_date")
-        val customDays = inputData.getInt("days", -1)
-
-        val today = LocalDate.now()
-        
-        val backfillStartDate = when {
-            startStr != null -> {
-                Log.i(TAG, "Using INPUT start_date: $startStr")
-                LocalDate.parse(startStr)
-            }
-            customDays != -1 -> {
-                Log.i(TAG, "Using INPUT custom days: $customDays")
-                today.minusDays(customDays.toLong())
-            }
-            else -> {
-                Log.i(TAG, "Using DEFAULT maintenance (Yesterday)")
-                today.minusDays(1)
-            }
-        }
-        
-        val backfillEndDate = if (endStr != null) LocalDate.parse(endStr) else today
-
-        Log.i(TAG, "Sync range resolved: $backfillStartDate to $backfillEndDate")
-        
+    override suspend fun doWork(): Result = syncMutex.withLock {
+        val prefs = PreferencesRepository(applicationContext)
+        val dao = AppDatabase.getDatabase(applicationContext).dailySyncStateDao()
+        val repo = HealthConnectRepository(applicationContext)
+        NetworkClient.initialize(applicationContext)
+        if (prefs.getApiKey().isBlank()) return@withLock Result.retry()
         try {
-            val healthRepo = HealthConnectRepository(applicationContext)
-            val prefsRepo = PreferencesRepository(applicationContext)
-            val deviceId = prefsRepo.getDeviceId()
-
-            if (!healthRepo.hasPermissions()) {
-                Log.e(TAG, "Permissions missing")
-                return Result.failure()
+            if (!repo.hasPermissions()) return@withLock Result.retry()
+            val today = LocalDate.now()
+            val end = inputData.getString("end_date")?.let(LocalDate::parse) ?: today
+            val start = inputData.getString("start_date")?.let(LocalDate::parse)
+                ?: today.minusDays(inputData.getInt("days", prefs.getLookbackDays() - 1).toLong())
+            if (start > end || end > today || ChronoUnit.DAYS.between(start, end) > 3660) {
+                return@withLock Result.failure()
             }
-
-            val zoneId = ZoneId.systemDefault()
-            val daysToSync = ChronoUnit.DAYS.between(backfillStartDate, backfillEndDate).toInt()
-
-            for (i in 0..daysToSync) {
-                val date = backfillEndDate.minusDays(i.toLong())
-                val dateStr = date.format(DateTimeFormatter.ISO_LOCAL_DATE)
-                
-                try {
-                    val startOfDay = date.atStartOfDay(zoneId).toInstant().toEpochMilli()
-                    val endOfDay = date.plusDays(1).atStartOfDay(zoneId).toInstant().toEpochMilli() - 1
-
-                    val lastState = syncStateDao.getSyncState(dateStr)
-                    val rawJson = healthRepo.readRawData(startOfDay, endOfDay)
-
-                    val request = DailyIngestRequest(
-                        date = dateStr,
-                        rawJson = rawJson,
-                        source = Source(
-                            deviceId = deviceId,
-                            collectedAt = Instant.now().toString()
-                        )
-                    )
-
-                    val currentHash = DataHasher.computeHash(request)
-                    if (lastState != null && lastState.dataHash == currentHash) {
-                        continue
-                    }
-
-                    Log.d(TAG, "Syncing $dateStr...")
-                    val response = NetworkClient.api.postDaily(request)
-                    
-                    if (response.isSuccessful) {
-                        syncStateDao.insertOrUpdate(DailySyncState(
-                            date = dateStr,
-                            dataHash = currentHash,
-                            lastSyncedAt = System.currentTimeMillis()
-                        ))
-                        Log.i(TAG, "Synced $dateStr (200)")
-                    } else {
-                        Log.e(TAG, "Failed $dateStr (${response.code()})")
-                    }
-
-                    delay(1000)
-
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error processing $dateStr: ${e.message}")
-                    if (e.message?.contains("quota exceeded", ignoreCase = true) == true) {
-                        delay(30000)
-                    }
+            val zone = ZoneId.systemDefault()
+            var needsRetry = false
+            // Most recent day first; a failed older backfill does not starve today.
+            for (offset in 0..ChronoUnit.DAYS.between(start, end)) {
+                val day = end.minusDays(offset)
+                val dayString = day.toString()
+                val read = repo.readSnapshot(day.atStartOfDay(zone).toInstant().toEpochMilli(),
+                    day.plusDays(1).atStartOfDay(zone).toInstant().toEpochMilli())
+                val request = DailyIngestRequest(date = dayString, rawJson = read.rawJson,
+                    source = Source(deviceId = prefs.getDeviceId(), collectedAt = Instant.now().toString()))
+                val hash = DataHasher.computeHash(request)
+                val previous = dao.getSyncState(dayString)
+                if (read.complete && previous?.dataHash == hash) continue
+                val response = NetworkClient.api.postDaily(request)
+                // Partial records are durable server-side, but must not acknowledge a
+                // complete local snapshot. Retry failed pages/types on the next run.
+                if (response.isSuccessful && read.complete) {
+                    dao.insertOrUpdate(DailySyncState(date = dayString, dataHash = hash,
+                        lastSyncedAt = System.currentTimeMillis()))
+                } else {
+                    needsRetry = true
+                    Log.w("HistoricalSync", "Snapshot needs retry status=${response.code()} complete=${read.complete}")
                 }
+                delay(1000)
             }
-            return Result.success()
-        } catch (e: Exception) {
-            Log.e(TAG, "Worker failed", e)
-            return Result.retry()
+            if (!needsRetry) prefs.setLastSyncRun(System.currentTimeMillis())
+            if (needsRetry) Result.retry() else Result.success()
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (error: Exception) {
+            Log.w("HistoricalSync", "Sync failed error_type=${error.javaClass.simpleName}")
+            Result.retry()
         }
     }
 }
